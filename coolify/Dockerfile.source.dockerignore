@@ -1,0 +1,24 @@
+# BuildKit prefers <dockerfile>.dockerignore over the repository root
+# .dockerignore. The root file excludes nearly everything so that the CI
+# release image only ships release-packages/ and ci/; a source build needs the
+# whole tree, including .git (for `git rev-parse HEAD`) and the lib/vscode
+# submodule.
+#
+# Only build output and dependency trees are excluded here.
+.github
+.pc
+/coverage
+/out
+/out-*
+/release
+/release-gcp
+/release-images
+/release-npm-package
+/release-packages
+/release-standalone
+/lib/vscode-reh-web-*
+/lib/vscode/.build
+/lib/vscode/out
+/lib/vscode/out-*
+node_modules
+test/test-results

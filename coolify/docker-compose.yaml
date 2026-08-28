@@ -1,0 +1,41 @@
+# code-server on Coolify — Docker Compose build pack.
+#
+# Usage: create a new resource in Coolify, pick "Docker Compose" as the build
+# pack, and set the compose file location to `/coolify/docker-compose.yaml`.
+# See docs/coolify.md for the full walkthrough.
+#
+# Notes:
+#   - No `ports:` mapping. Coolify's Traefik/Caddy proxy reaches the container
+#     over the internal network, so publishing to the host is unnecessary (and
+#     publishing would expose an unencrypted port to the internet).
+#   - A single named volume is mounted at /home/coder. That path exists in the
+#     image and is owned by uid/gid 1000, so Docker copies that ownership onto
+#     the new volume. Mounting deeper paths that do not exist in the image
+#     (for example /home/coder/project) creates root-owned directories that
+#     code-server cannot write to.
+services:
+  code-server:
+    image: codercom/code-server:${CODE_SERVER_VERSION:-4.135.0}
+    restart: unless-stopped
+    environment:
+      # Set these in Coolify's "Environment Variables" tab.
+      - PASSWORD=${PASSWORD}
+      - TZ=${TZ:-UTC}
+      # code-server writes ~/.config/code-server/config.yaml on first start with
+      # a random password. PASSWORD above takes precedence over that file.
+      - DOCKER_USER=${DOCKER_USER:-coder}
+    expose:
+      - "8080"
+    volumes:
+      - code-server-home:/home/coder
+    healthcheck:
+      # /healthz is served before the auth middleware, so it answers 200 even
+      # when password auth is on, and it does not count as user activity.
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  code-server-home:

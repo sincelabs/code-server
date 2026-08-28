@@ -28,6 +28,11 @@
           "title": "Helm",
           "description": "How to install code-server using the Helm package manager",
           "path": "./helm.md"
+        },
+        {
+          "title": "Coolify",
+          "description": "How to deploy code-server on a Coolify server",
+          "path": "./coolify.md"
         }
       ]
     },

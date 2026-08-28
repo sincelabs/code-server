@@ -1,0 +1,135 @@
+# code-server on Coolify — build the image from this repository's source.
+#
+# Only use this if you have actually changed code-server's own source or its
+# patches to Code. It compiles VS Code, which is slow and memory hungry:
+# expect 40-90 minutes, 8 GB of RAM, and ~30 GB of free disk on the builder.
+# If you only want extra packages or extensions, use ./Dockerfile instead.
+#
+# In Coolify: build pack "Dockerfile", Dockerfile location
+# `/coolify/Dockerfile.source`, Ports Exposes `8080`, and turn ON both
+# "Git Submodules" (to fetch lib/vscode) and "Git LFS" in the resource's
+# settings. See docs/coolify.md.
+#
+# Context note: the repository root .dockerignore excludes almost everything so
+# that the CI release image stays small. This build ships its own
+# Dockerfile.source.dockerignore, which BuildKit prefers over the root file.
+
+ARG VERSION=4.135.0
+
+# ---------------------------------------------------------------------------
+# Build stage
+# ---------------------------------------------------------------------------
+FROM node:24-bookworm AS build
+
+ARG VERSION
+ENV VERSION=${VERSION}
+ENV CI=true
+# The Code build is the memory hog; give V8 room or it dies with a heap OOM.
+ENV NODE_OPTIONS=--max-old-space-size=8192
+
+# Build dependencies for Code, plus the tools ci/build/* expects.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    g++ \
+    git \
+    git-lfs \
+    jq \
+    libkrb5-dev \
+    libsecret-1-dev \
+    libx11-dev \
+    libxkbfile-dev \
+    pkg-config \
+    python-is-python3 \
+    python3 \
+    quilt \
+    rsync \
+    unzip \
+  && git lfs install --system \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . /src
+
+# ci/build/build-vscode.sh and build-release.sh both run `git rev-parse HEAD`,
+# so the build context has to carry .git, and git has to trust it.
+RUN git config --global --add safe.directory /src \
+  && git config --global --add safe.directory /src/lib/vscode \
+  && if [ ! -f .git/HEAD ]; then \
+       echo "ERROR: .git is missing from the build context."; \
+       echo "BuildKit must be enabled so coolify/Dockerfile.source.dockerignore is used."; \
+       exit 1; \
+     fi \
+  && if [ ! -f lib/vscode/package.json ]; then \
+       echo "ERROR: lib/vscode is empty."; \
+       echo "Enable 'Git Submodules' on the Coolify resource, or run"; \
+       echo "'git submodule update --init' before building locally."; \
+       exit 1; \
+     fi
+
+# quilt exits 2 when the series is already fully applied; that is not an error.
+RUN quilt push -a || [ "$?" = 2 ]
+
+RUN npm ci
+
+RUN npm run build \
+  && npm run build:vscode \
+  && KEEP_MODULES=1 npm run release
+
+# ---------------------------------------------------------------------------
+# Runtime stage — mirrors ci/release-image/Dockerfile so the resulting
+# container behaves exactly like the published codercom/code-server image.
+# ---------------------------------------------------------------------------
+FROM debian:13
+
+RUN apt-get update \
+  && apt-get install -y \
+    curl \
+    dumb-init \
+    git \
+    git-lfs \
+    htop \
+    locales \
+    lsb-release \
+    man-db \
+    nano \
+    openssh-client \
+    procps \
+    sudo \
+    vim-tiny \
+    wget \
+    zsh \
+  && git lfs install \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN sed -i "s/# en_US.UTF-8/en_US.UTF-8/" /etc/locale.gen \
+  && locale-gen
+ENV LANG=en_US.UTF-8
+
+RUN if grep -q 1000 /etc/passwd; then \
+    userdel -r "$(id -un 1000)"; \
+  fi \
+  && adduser --gecos '' --disabled-password coder \
+  && echo "coder ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/nopasswd
+
+RUN ARCH="$(dpkg --print-architecture)" \
+  && curl -fsSL "https://github.com/boxboat/fixuid/releases/download/v0.6.0/fixuid-0.6.0-linux-$ARCH.tar.gz" | tar -C /usr/local/bin -xzf - \
+  && chown root:root /usr/local/bin/fixuid \
+  && chmod 4755 /usr/local/bin/fixuid \
+  && mkdir -p /etc/fixuid \
+  && printf "user: coder\ngroup: coder\n" > /etc/fixuid/config.yml
+
+COPY ci/release-image/entrypoint.sh /usr/bin/entrypoint.sh
+COPY --from=build /src/release /usr/lib/code-server
+RUN ln -s /usr/lib/code-server/bin/code-server /usr/bin/code-server
+
+# Scripts placed here are run on container startup.
+# https://github.com/coder/code-server/issues/5177
+ENV ENTRYPOINTD=/home/coder/entrypoint.d
+
+EXPOSE 8080
+USER 1000
+ENV USER=coder
+WORKDIR /home/coder
+ENTRYPOINT ["/usr/bin/entrypoint.sh", "--bind-addr", "0.0.0.0:8080", "."]
